@@ -7,7 +7,8 @@ var yaml = require('js-yaml');
 var xml2js = require('xml2js');
 var request = require('request')
 var url = require('url')
-var querystring = require("querystring");
+var querystring = require('querystring');
+var crypto = require('crypto')
 
 var Inotify = require('inotify').Inotify;
 var inotify = new Inotify();
@@ -108,9 +109,15 @@ function service_validate(host, ticket, next_url, cb, errcb) {
                 return errcb()
 
             console.log(r['cas:user'])
-            cb(r['cas:data'])
+            cb('none')
         });
     })
+}
+
+var sessions = {}
+
+function register_session(token, data) {
+    sessions[token] = data
 }
 
 function handle_portal(req, res, conf) {
@@ -121,19 +128,31 @@ function handle_portal(req, res, conf) {
         res.end('not found');
         return;
     }
+
     service_validate(
         conf.portal_host,
         query.ticket,
         query.next,
         function(additional_data) {
-            res.writeHead(200, {});
-            res.end('authenticated - TODO: redirect');
+            crypto.randomBytes(32, function(ex, buf) {
+                var token = buf.toString('hex');
+                register_session(token, additional_data)
+
+                res.writeHead(303, {
+                    'Location': query.next,
+                    'Set-cookie': '__extranet_auth='
+                    + token + '; domain=' + conf.host.slice(1)
+                    + '; secure; httponly'
+                });
+                res.end('redirect');
+                return;
+            });
+
             return;
         },
         function() {
             res.writeHead(500, {});
             res.end('error');
-            return;
         })
 }
 
@@ -149,6 +168,17 @@ function server_callback(req, res) {
         var remote_ip = req.connection.remoteAddress;
         console.log(remote_ip, req.method, host, req.url,
                    '->', addr.host, addr.port);
+
+        if(!req.connection.encrypted) {
+            if(addr.protect || addr.sslonly) {
+                res.writeHead(301, {
+                    'Location': 'https://' + req.headers.host +
+                        req.url
+                })
+                res.end('redirect to ssl')
+                return
+            }
+        }
 
         var status
         if(addr.protect) {
