@@ -1,0 +1,8 @@
+ssl:
+- hosts: ["*.atomshare.net", "default"]
+  key: example.key
+  cert: example.crt
+proxy:
+- host: localhost
+  target_host: localhost
+  target_port: 8000
