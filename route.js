@@ -68,9 +68,8 @@ function process_ip(ip) {
     return ip;
 }
 
-function check_cookie(req, res, addr, cb) {
-    var cookies = new Cookies(req, res)
-    var token = cookies.get('__extranet_auth')
+function check_cookie(cookies, addr, cb) {
+    var token = cookies.__extranet_auth
     get_session(token, function(data) {
         cb('ok')
     }, function() {
@@ -176,6 +175,43 @@ function handle_portal(req, res, conf) {
         })
 }
 
+function get_cookies(cookie_header) {
+    // http://stackoverflow.com/questions/4003823/javascript-getcookie-functions/4004010#4004010
+    var c = cookie_header, v = 0, cookies = {};
+    if (c.match(/^\s*\$Version=(?:"1"|1);\s*(.*)/)) {
+        c = RegExp.$1;
+        v = 1;
+    }
+    if (v === 0) {
+        c.split(/[,;]/).map(function(cookie) {
+            var parts = cookie.split(/=/, 2),
+                name = decodeURIComponent(parts[0].trimLeft()),
+                value = parts.length > 1 ? decodeURIComponent(parts[1].trimRight()) : null;
+            cookies[name] = value;
+        });
+    } else {
+        c.match(/(?:^|\s+)([!#$%&'*+\-.0-9A-Z^`a-z|~]+)=([!#$%&'*+\-.0-9A-Z^`a-z|~]*|"(?:[\x20-\x7E\x80\xFF]|\\[\x00-\x7F])*")(?=\s*[,;]|$)/g).map(function($0, $1) {
+            var name = $0,
+                value = $1.charAt(0) === '"'
+                          ? $1.substr(1, -1).replace(/\\(.)/g, "$1")
+                          : $1;
+            cookies[name] = value;
+        });
+    }
+    return cookies;
+}
+
+function filter_cookies(cookies) {
+    var cookie_str = '';
+    for(var name in cookies) {
+        if(!/^__extranet_(.*)/.test(name))
+            cookie_str += name + '=' + cookies[name] + '; ';
+    }
+    cookie_str = cookie_str.slice(0, cookie_str.length - 2)
+    console.log(cookie_str);
+    return cookie_str;
+}
+
 function server_callback(req, res) {
     var host = req.headers.host;
     var respond, respond_error;
@@ -194,22 +230,25 @@ function server_callback(req, res) {
                 res.writeHead(301, {
                     'Location': 'https://' + req.headers.host +
                         req.url
-                })
-                res.end('redirect to ssl')
-                return
+                });
+                res.end('redirect to ssl');
+                return;
             }
         }
 
+        var cookies = get_cookies(req.headers.cookie);
+        req.headers.cookie = filter_cookies(cookies);
+
         function cb(status) {
             if(status == 'error') {
-                return respond_error()
+                return respond_error();
             }
 
             if(status == 'missing') {
-                return redirect_to_portal(host, req, res)
+                return redirect_to_portal(host, req, res);
             }
 
-            var remote_addr = process_ip(req.connection.remoteAddress)
+            var remote_addr = process_ip(req.connection.remoteAddress);
 
             var proxy_request = http.request({
                 hostname: addr.target_host,
@@ -235,7 +274,7 @@ function server_callback(req, res) {
         }
 
         if(addr.protect) {
-            check_cookie(req, res, addr, cb);
+            check_cookie(cookies, addr, cb);
         } else {
             cb('ok');
         }
