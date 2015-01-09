@@ -1,0 +1,16 @@
+{
+    "name": "extranet",
+    "version": "0.0.1",
+    "description": "Reverse proxy with optional CAS authentication.",
+    "keywords": ["reverse proxy", "proxy", "cas"],
+    "license": "Apache-2.0",
+    "author": {"name": "Michał Zieliński", "email": "michal@zielinscy.org.pl", "url": "http://zielmicha.com"},
+    "bin": {"extranet": "./route.js"},
+    "repository": {"type": "git", "url": "https://github.com/zielmicha/extranet.git"},
+    "dependencies": {
+        "xml2js": ">=0.4.4",
+        "js-yaml": "^3.2.5",
+        "request": "^2.51.0",
+        "inotify": "^1.2.1"
+    }
+}
