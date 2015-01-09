@@ -1,8 +1,16 @@
 ssl:
-- hosts: ["*.atomshare.net", "default"]
+- hosts: ["*.localhost", "default"]
   key: example.key
   cert: example.crt
+extranet:
+- hosts: ["*.localhost"]
+  portal_host: 'extranet.localhost'
+  cas_url: https://login.atomshare.net/cas
 proxy:
 - host: localhost
   target_host: localhost
   target_port: 8000
+- host: secret.localhost
+  target_host: localhost
+  target_port: 8000
+  protect: true

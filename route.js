@@ -4,7 +4,10 @@ var http = require('http');
 var https = require('https');
 var crypto = require('crypto');
 var yaml = require('js-yaml');
-var parseString = require('xml2js').parseString;
+var xml2js = require('xml2js');
+var request = require('request')
+var url = require('url')
+var querystring = require("querystring");
 
 var Inotify = require('inotify').Inotify;
 var inotify = new Inotify();
@@ -24,6 +27,7 @@ inotify.addWatch({
 })
 
 var config
+var portal_hosts
 
 function load_config() {
     config = yaml.safeLoad(fs.readFileSync(config_path));
@@ -32,6 +36,13 @@ function load_config() {
         entry.key = fs.readFileSync(entry.key);
         entry.cert = fs.readFileSync(entry.cert);
     })
+
+    portal_hosts = {}
+
+    config.extranet.forEach(function(entry) {
+        portal_hosts[entry.portal_host] = entry
+    })
+
     console.log("loaded config")
 }
 
@@ -53,13 +64,106 @@ function process_ip(ip) {
     return ip;
 }
 
+function check_cookie(req, addr) {
+    return 'missing'
+}
+
+function redirect_to_portal(host, req, res) {
+    var conf = host_match(config.extranet, host)
+    if(!conf) {
+        res.statusCode = 500;
+        res.end('missing extranet portal');
+        return;
+    }
+    var proto = req.connection.encrypted ? 'https' : 'http'
+    var next_url = proto + '://' + req.headers.host + req.url;
+    res.writeHead(303, {
+        'Location': conf.cas_url + '/login?service='
+        + encodeURIComponent(
+            'https://' +
+                conf.portal_host +
+                '/?next=' + encodeURIComponent(next_url))
+    });
+    res.end('redirect')
+}
+
+function service_validate(host, ticket, next_url, cb, errcb) {
+    var conf = host_match(config.extranet, host)
+    var url = conf.cas_url + '/serviceValidate' +
+        '?ticket=' + encodeURIComponent(ticket) +
+        '&service=' + encodeURIComponent('https://' +
+                conf.portal_host +
+                '/?next=' + encodeURIComponent(next_url));
+
+    console.log(url)
+    request(url, function(error, response, body) {
+        console.log('response', body)
+        if(error || response.statusCode != 200)
+            return errcb()
+
+        xml2js.Parser().parseString(body, function(err, result) {
+            if(err) return errcb()
+            var r = result['cas:serviceResponse']
+            if(r['cas:authenticationFailure'])
+                return errcb()
+
+            console.log(r['cas:user'])
+            cb(r['cas:data'])
+        });
+    })
+}
+
+function handle_portal(req, res, conf) {
+    var p = url.parse(req.url)
+    var query = querystring.parse(p.query)
+    if(p.pathname != '/') {
+        res.writeHead(404, {});
+        res.end('not found');
+        return;
+    }
+    service_validate(
+        conf.portal_host,
+        query.ticket,
+        query.next,
+        function(additional_data) {
+            res.writeHead(200, {});
+            res.end('authenticated - TODO: redirect');
+            return;
+        },
+        function() {
+            res.writeHead(500, {});
+            res.end('error');
+            return;
+        })
+}
+
 function server_callback(req, res) {
     var host = req.headers.host;
-    var respond;
+    var respond, respond_error;
+
+    if(portal_hosts[host]) {
+        return handle_portal(req, res, portal_hosts[host])
+    }
+
     get_addr_for(host, respond = function(addr) {
         var remote_ip = req.connection.remoteAddress;
         console.log(remote_ip, req.method, host, req.url,
-                   '->', addr.target_host, addr.target_port);
+                   '->', addr.host, addr.port);
+
+        var status
+        if(addr.protect) {
+            status = check_cookie(req, addr);
+        } else {
+            status = 'ok'
+        }
+
+        if(status == 'error') {
+            return respond_error()
+        }
+
+        if(status == 'missing') {
+            return redirect_to_portal(host, req, res)
+        }
 
         var remote_addr = process_ip(req.connection.remoteAddress)
 
@@ -84,8 +188,8 @@ function server_callback(req, res) {
             res.statusCode = 502;
             res.end(e.message);
         });
-    }, function() {
-        res.statusCode = 502;
+    }, respond_error = function() {
+        res.statusCode = 403;
         res.end('no such host');
     })
 }
@@ -101,8 +205,9 @@ function sni_callback(host, cb) {
 function star_match(pattern, val) {
     if(pattern == val)
         return true;
-    if(pattern[0] == '*' && val.slice(0, pattern.length - 1) == pattern.slice(1))
+    if(pattern[0] == '*' && val.slice(val.length - pattern.length + 1) == pattern.slice(1))
        return true;
+
     return false;
 }
 
@@ -111,9 +216,10 @@ function host_match(conf, host) {
         var entry = conf[i]
         if(entry.host && star_match(entry.host, host))
             return entry;
-        for(var j=0; j < entry.hosts.length; j++)
-            if(star_match(entry.hosts[j], host))
-               return entry;
+        if(entry.hosts)
+            for(var j=0; j < entry.hosts.length; j++)
+                if(star_match(entry.hosts[j], host))
+                    return entry;
     }
 }
 
