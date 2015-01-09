@@ -162,6 +162,12 @@ function handle_portal(cookies, req, res, conf) {
         return;
     }
 
+    if(!star_match(conf.host, url.parse(query.next).host)) {
+        res.writeHead(403, {});
+        res.end('bad redirect');
+        return;
+    }
+
     service_validate(
         conf.portal_host,
         query.ticket,
