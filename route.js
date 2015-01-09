@@ -150,7 +150,7 @@ function get_session(token, cb, errcb) {
 function handle_portal(cookies, req, res, conf) {
     var p = url.parse(req.url)
     var query = querystring.parse(p.query)
-    if(p.pathname != '/') {
+    if(p.pathname != '/' || !query.next || !query.token) {
         res.writeHead(404, {});
         res.end('not found');
         return;
