@@ -77,7 +77,7 @@ function check_cookie(cookies, addr, cb) {
     })
 }
 
-function redirect_to_portal(host, req, res) {
+function redirect_to_portal(cookies, host, req, res) {
     var conf = host_match(config.extranet, host)
     if(!conf) {
         res.statusCode = 500;
@@ -86,23 +86,31 @@ function redirect_to_portal(host, req, res) {
     }
     var proto = req.connection.encrypted ? 'https' : 'http'
     var next_url = proto + '://' + req.headers.host + req.url;
-    res.writeHead(303, {
-        'Location': conf.cas_url + '/login?service='
-        + encodeURIComponent(
-            'https://' +
-                conf.portal_host +
-                '/?next=' + encodeURIComponent(next_url))
-    });
-    res.end('redirect')
+
+    crypto.randomBytes(32, function(ex, buf) {
+        var token = cookies.__extranet_token
+        if(!token) token = buf.toString('hex');
+
+        res.writeHead(303, {
+            'Location': conf.cas_url + '/login?service='
+                + encodeURIComponent(
+                    'https://' +
+                        conf.portal_host +
+                        '/?next=' + encodeURIComponent(next_url) +
+                        '&token=' + token),
+            'Set-Cookie': '__extranet_token='
+                + token + '; domain=' + conf.host.slice(1)
+                + '; secure; httponly'
+        });
+        res.end('redirect')
+    })
 }
 
-function service_validate(host, ticket, next_url, cb, errcb) {
+function service_validate(host, ticket, service, cb, errcb) {
     var conf = host_match(config.extranet, host)
     var url = conf.cas_url + '/serviceValidate' +
         '?ticket=' + encodeURIComponent(ticket) +
-        '&service=' + encodeURIComponent('https://' +
-                conf.portal_host +
-                '/?next=' + encodeURIComponent(next_url));
+        '&service=' + encodeURIComponent(service);
 
     console.log(url)
     request(url, function(error, response, body) {
@@ -139,7 +147,7 @@ function get_session(token, cb, errcb) {
                       })
 }
 
-function handle_portal(req, res, conf) {
+function handle_portal(cookies, req, res, conf) {
     var p = url.parse(req.url)
     var query = querystring.parse(p.query)
     if(p.pathname != '/') {
@@ -148,10 +156,17 @@ function handle_portal(req, res, conf) {
         return;
     }
 
+    if(cookies.__extranet_token != query.token) {
+        res.writeHead(403, {});
+        res.end('bad token');
+        return;
+    }
+
     service_validate(
         conf.portal_host,
         query.ticket,
-        query.next,
+        'https://' + conf.portal_host + '/?' +
+            querystring.stringify({next: query.next, token: query.token}),
         function(additional_data) {
             crypto.randomBytes(32, function(ex, buf) {
                 var token = buf.toString('hex');
@@ -178,6 +193,7 @@ function handle_portal(req, res, conf) {
 function get_cookies(cookie_header) {
     // http://stackoverflow.com/questions/4003823/javascript-getcookie-functions/4004010#4004010
     var c = cookie_header, v = 0, cookies = {};
+    if(!c) return {}
     if (c.match(/^\s*\$Version=(?:"1"|1);\s*(.*)/)) {
         c = RegExp.$1;
         v = 1;
@@ -208,7 +224,6 @@ function filter_cookies(cookies) {
             cookie_str += name + '=' + cookies[name] + '; ';
     }
     cookie_str = cookie_str.slice(0, cookie_str.length - 2)
-    console.log(cookie_str);
     return cookie_str;
 }
 
@@ -216,12 +231,15 @@ function server_callback(req, res) {
     var host = req.headers.host;
     var respond, respond_error;
 
+    var cookies = get_cookies(req.headers.cookie);
+    req.headers.cookie = filter_cookies(cookies);
+
     if(portal_hosts[host]) {
-        return handle_portal(req, res, portal_hosts[host])
+        return handle_portal(cookies, req, res, portal_hosts[host])
     }
 
     get_addr_for(host, respond = function(addr) {
-        var remote_ip = req.connection.remoteAddress;
+        var remote_ip = process_ip(req.connection.remoteAddress);
         console.log(remote_ip, req.method, host, req.url,
                    '->', addr.target_host, addr.target_port);
 
@@ -236,19 +254,14 @@ function server_callback(req, res) {
             }
         }
 
-        var cookies = get_cookies(req.headers.cookie);
-        req.headers.cookie = filter_cookies(cookies);
-
         function cb(status) {
             if(status == 'error') {
                 return respond_error();
             }
 
             if(status == 'missing') {
-                return redirect_to_portal(host, req, res);
+                return redirect_to_portal(cookies, host, req, res);
             }
-
-            var remote_addr = process_ip(req.connection.remoteAddress);
 
             var proxy_request = http.request({
                 hostname: addr.target_host,
@@ -259,7 +272,7 @@ function server_callback(req, res) {
 
             req.pipe(proxy_request);
 
-            req.headers['X-Forwarded-For'] = remote_addr;
+            req.headers['X-Forwarded-For'] = remote_ip;
 
             proxy_request.on('response', function(proxy_response) {
                 proxy_response.pipe(res);
