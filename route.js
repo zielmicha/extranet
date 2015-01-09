@@ -9,6 +9,9 @@ var request = require('request')
 var url = require('url')
 var querystring = require('querystring');
 var crypto = require('crypto')
+var Cookies = require('cookies')
+var redis = require('redis')
+var redis_client = redis.createClient()
 
 var Inotify = require('inotify').Inotify;
 var inotify = new Inotify();
@@ -65,8 +68,14 @@ function process_ip(ip) {
     return ip;
 }
 
-function check_cookie(req, addr) {
-    return 'missing'
+function check_cookie(req, res, addr, cb) {
+    var cookies = new Cookies(req, res)
+    var token = cookies.get('__extranet_auth')
+    get_session(token, function(data) {
+        cb('ok')
+    }, function() {
+        cb('missing')
+    })
 }
 
 function redirect_to_portal(host, req, res) {
@@ -117,7 +126,18 @@ function service_validate(host, ticket, next_url, cb, errcb) {
 var sessions = {}
 
 function register_session(token, data) {
-    sessions[token] = data
+    redis_client.hset('extranet_session', token,
+                      JSON.stringify(data))
+}
+
+function get_session(token, cb, errcb) {
+    redis_client.hget('extranet_session', token,
+                      function(err, data) {
+                          if(data)
+                              cb(JSON.parse(data))
+                          else
+                              errcb()
+                      })
 }
 
 function handle_portal(req, res, conf) {
@@ -167,7 +187,7 @@ function server_callback(req, res) {
     get_addr_for(host, respond = function(addr) {
         var remote_ip = req.connection.remoteAddress;
         console.log(remote_ip, req.method, host, req.url,
-                   '->', addr.host, addr.port);
+                   '->', addr.target_host, addr.target_port);
 
         if(!req.connection.encrypted) {
             if(addr.protect || addr.sslonly) {
@@ -180,44 +200,46 @@ function server_callback(req, res) {
             }
         }
 
-        var status
+        function cb(status) {
+            if(status == 'error') {
+                return respond_error()
+            }
+
+            if(status == 'missing') {
+                return redirect_to_portal(host, req, res)
+            }
+
+            var remote_addr = process_ip(req.connection.remoteAddress)
+
+            var proxy_request = http.request({
+                hostname: addr.target_host,
+                port: addr.target_port,
+                path: req.url,
+                method: req.method,
+                headers: req.headers});
+
+            req.pipe(proxy_request);
+
+            req.headers['X-Forwarded-For'] = remote_addr;
+
+            proxy_request.on('response', function(proxy_response) {
+                proxy_response.pipe(res);
+                res.writeHead(proxy_response.statusCode, proxy_response.headers);
+            })
+
+            proxy_request.on('error', function(e) {
+                console.log('problem with request: ' + e.message);
+                res.statusCode = 502;
+                res.end(e.message);
+            });
+        }
+
         if(addr.protect) {
-            status = check_cookie(req, addr);
+            check_cookie(req, res, addr, cb);
         } else {
-            status = 'ok'
+            cb('ok');
         }
 
-        if(status == 'error') {
-            return respond_error()
-        }
-
-        if(status == 'missing') {
-            return redirect_to_portal(host, req, res)
-        }
-
-        var remote_addr = process_ip(req.connection.remoteAddress)
-
-        var proxy_request = http.request({
-            hostname: addr.target_host,
-            port: addr.target_port,
-            path: req.url,
-            method: req.method,
-            headers: req.headers});
-
-        req.pipe(proxy_request);
-
-        req.headers['X-Forwarded-For'] = remote_addr;
-
-        proxy_request.on('response', function(proxy_response) {
-            proxy_response.pipe(res);
-            res.writeHead(proxy_response.statusCode, proxy_response.headers);
-        })
-
-        proxy_request.on('error', function(e) {
-            console.log('problem with request: ' + e.message);
-            res.statusCode = 502;
-            res.end(e.message);
-        });
     }, respond_error = function() {
         res.statusCode = 403;
         res.end('no such host');
