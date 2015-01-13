@@ -108,13 +108,13 @@ function redirect_to_portal(cookies, host, req, res) {
 
 function service_validate(host, ticket, service, cb, errcb) {
     var conf = host_match(config.extranet, host)
-    var url = conf.cas_url + '/serviceValidate' +
+    var url = conf.cas_local_url + '/serviceValidate' +
         '?ticket=' + encodeURIComponent(ticket) +
         '&service=' + encodeURIComponent(service);
 
     console.log(url)
     request(url, function(error, response, body) {
-        console.log('response', body)
+        console.log('response', error, body)
         if(error || response.statusCode != 200)
             return errcb()
 
